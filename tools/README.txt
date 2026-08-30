@@ -23,3 +23,12 @@ gen.py reads the converted text from fragments.json, which is produced by:
 
 Editing the generated HTML by hand is fine; just remember that rerunning
 gen.py overwrites everything under pages/.
+
+Checking the conversion:
+
+  python3 tools/audit.py     compares every page against pdftotext and
+                             reports text that went missing, was added, or
+                             changed places
+  python3 tools/precise.py   reports paragraph breaks the printed page does
+                             not support (no extra space, and the line before
+                             the break fills the column)

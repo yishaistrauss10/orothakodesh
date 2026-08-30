@@ -107,7 +107,7 @@ def all_page_texts(path):
     return raw.split("\f")
 
 
-def page_lines(raw, doc, pno):
+def page_lines(raw, doc, pno, vocab=None):
     """Lines of one PDF page: text, kind, geometry."""
     tl = [l.translate(BIDI).strip() for l in raw.split("\n")]
 
@@ -126,12 +126,16 @@ def page_lines(raw, doc, pno):
     # pdftotext sometimes drops the space between two words of a justified
     # line ("בעולמואלא"); PyMuPDF keeps them apart, so split them back
     known = {norm(w[0]) for w in mw if len(norm(w[0])) > 1}
+    vocab = vocab or {}
     split_words, split_lines = [], []
     for w, li in zip(words, line_of):
         n = norm(w)
-        if len(n) > 4 and n not in known:
+        # split only a token the document never uses whole, into two it does:
+        # PyMuPDF also breaks words mid-way, and those must be left alone
+        if len(n) > 4 and n not in known and vocab.get(n, 0) <= 1:
             for k in range(2, len(n) - 1):
-                if n[:k] in known and n[k:] in known:
+                if (n[:k] in known and n[k:] in known
+                        and vocab.get(n[:k], 0) >= 2 and vocab.get(n[k:], 0) >= 2):
                     cut = len(w) - len(n) + k if w.endswith(n[k:]) else k
                     split_words.extend([w[:cut], w[cut:]])
                     split_lines.extend([li, li])
@@ -362,9 +366,10 @@ def convert(path, per_page=False):
     """Booklet as HTML blocks; with per_page, [(page number, blocks)] instead."""
     doc = pymupdf.open(path)
     texts = all_page_texts(path)
+    vocab = collections.Counter(norm(w) for t in texts for w in t.split())
     out, notes, pages = [], [], []
     for pno in range(doc.page_count):
-        lines = page_lines(texts[pno] if pno < len(texts) else "", doc, pno)
+        lines = page_lines(texts[pno] if pno < len(texts) else "", doc, pno, vocab)
         page_blocks, page_refs = [], []
         for para in paragraphs(lines, doc[pno].rect.width):
             text = render_words(para)
