@@ -91,6 +91,29 @@ def page_lines(raw, doc, pno):
                     line_of.append(li)
 
     mw = mupdf_words(doc[pno])
+
+    # pdftotext sometimes drops the space between two words of a justified
+    # line ("בעולמואלא"); PyMuPDF keeps them apart, so split them back
+    known = {norm(w[0]) for w in mw if len(norm(w[0])) > 1}
+    split_words, split_lines = [], []
+    for w, li in zip(words, line_of):
+        n = norm(w)
+        if len(n) > 4 and n not in known:
+            for k in range(2, len(n) - 1):
+                if n[:k] in known and n[k:] in known:
+                    cut = len(w) - len(n) + k if w.endswith(n[k:]) else k
+                    split_words.extend([w[:cut], w[cut:]])
+                    split_lines.extend([li, li])
+                    break
+            else:
+                split_words.append(w); split_lines.append(li)
+        else:
+            split_words.append(w); split_lines.append(li)
+    words, line_of = split_words, split_lines
+    line_words = {}
+    for i, li in enumerate(line_of):
+        line_words.setdefault(li, []).append(i)
+
     sm = difflib.SequenceMatcher(None, [norm(w) for w in words],
                                  [norm(w[0]) for w in mw], autojunk=False)
     meta = [None] * len(words)
@@ -112,12 +135,21 @@ def page_lines(raw, doc, pno):
         if w in small_numbers and meta[i][1] > 12:
             meta[i] = ("David", 11) + tuple(meta[i][2:])
 
+    # the body runs to a fixed right margin; a quotation is indented from it
+    edges = sorted(max(meta[i][3] for i in idx) for idx in line_words.values() if idx)
+    right_margin = edges[len(edges) // 2] if edges else 0.0
+
     lines = []
+    dash_pending = False
     for li, text in enumerate(tl):
-        idx = [i for i, l in enumerate(line_of) if l == li]
+        idx = line_words.get(li, [])
         if not idx or not text.strip():
             continue
         kinds = [classify(meta[i][0], meta[i][1]) for i in idx]
+        bare = text.translate(BIDI).strip()
+        if bare in {"-", "–", "•"}:
+            dash_pending = True          # the bullet of a quotation
+            continue
         if all(k == "bold" for k in kinds):
             kind = "heading"
         elif kinds.count("note") > len(kinds) / 2:
@@ -132,7 +164,11 @@ def page_lines(raw, doc, pno):
         x1 = max(meta[i][3] for i in idx)
         ys = sorted(meta[i][4] for i in idx)
         y = ys[len(ys) // 2]   # median: a superscript must not shift the line
-        lines.append(dict(text=text, kind=kind, kinds=kinds,
+        indent = right_margin - x1
+        if kind == "body" and (dash_pending or indent > 15):
+            kind = "cite"   # a passage quoted from another work
+        dash_pending = False
+        lines.append(dict(text=text, kind=kind, kinds=kinds, indent=indent,
                           words=[words[i] for i in idx],
                           metas=[meta[i] for i in idx], x0=x0, x1=x1, y=y))
     return lines
@@ -164,6 +200,8 @@ def paragraphs(lines, page_width):
             if l["kind"] == "heading" or prev["kind"] == "heading":
                 start_new = True
             elif (l["kind"] == "note") != (prev["kind"] == "note"):
+                start_new = True
+            elif (l["kind"] == "cite") != (prev["kind"] == "cite"):
                 start_new = True
             elif gap < 0:            # new page or new column
                 start_new = True
@@ -294,6 +332,8 @@ def convert(path):
                         notes.append(f"<li{attr}>{item}</li>")
                         if ref:
                             page_refs.append(ref)
+            elif para["kind"] == "cite" and len(re.sub(r"<[^>]+>", "", text)) > 24:
+                page_blocks.append(f'<p class="cite">{text}</p>')
             elif para["kind"] == "quote" and text.startswith('<em class="src">') and text.endswith("</em>"):
                 inner = text[len('<em class="src">'):-len("</em>")]
                 page_blocks.append(f'<p class="src">{inner}</p>')
