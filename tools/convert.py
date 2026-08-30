@@ -7,7 +7,7 @@ breaks) comes from PyMuPDF spans, which carry font, size and geometry.
 The two word streams are aligned so each pdftotext word inherits the font
 and position of its PyMuPDF counterpart.
 """
-import re, subprocess, difflib, html
+import re, subprocess, difflib, html, collections
 import pymupdf
 
 BIDI = dict.fromkeys(map(ord, "‪‫‬‭‮‎‏⁦⁧⁨⁩"), None)
@@ -62,8 +62,6 @@ def size_class(para):
 
 
 def classify(font, size):
-    if font.startswith("Arial"):
-        return "pageno"
     if "Narkisim" in font:
         return "quote"
     if "Bold" in font and size >= 15:
@@ -179,20 +177,26 @@ def page_lines(raw, doc, pno):
         if not idx or not text.strip():
             continue
         kinds = [classify(meta[i][0], meta[i][1]) for i in idx]
+        # a footnote marker is small, but it does not make the line a footnote
+        content = [i for i in idx
+                   if not (re.fullmatch(r"\d{1,3}", words[i].translate(BIDI))
+                           and meta[i][1] <= 12)]
+        vote = [classify(meta[i][0], meta[i][1]) for i in content] or kinds
         bare = text.translate(BIDI).strip()
         if bare in {"-", "–", "•"}:
             dash_pending = True          # the bullet of a quotation
             continue
-        if all(k == "bold" for k in kinds):
+        if all(k == "bold" for k in vote):
             kind = "heading"
-        elif kinds.count("note") > len(kinds) / 2:
-            kind = "note"
-        elif kinds.count("quote") > len(kinds) / 2:
-            kind = "quote"
         else:
-            kind = "body" if kinds[0] == "bold" else kinds[0]
-        if all(k == "pageno" for k in kinds) or DIGITS_ONLY.match(text.translate(BIDI)):
-            continue
+            # the kind most of the line is set in, not whatever the first
+            # word happens to be: one stray span must not move a paragraph
+            counts = collections.Counter(vote)
+            kind = counts.most_common(1)[0][0]
+            if kind == "bold":
+                kind = "body"
+        if DIGITS_ONLY.match(text.translate(BIDI)):
+            continue   # a page number
         x0 = min(meta[i][2] for i in idx)
         x1 = max(meta[i][3] for i in idx)
         ys = sorted(meta[i][4] for i in idx)
@@ -222,6 +226,13 @@ def paragraphs(lines, page_width):
         if 0 < gap < 200 and a["kind"] == b["kind"]:
             by_kind.setdefault(a["kind"], []).append(gap)
     leadings = {k: sorted(v)[len(v) // 2] for k, v in by_kind.items() if v}
+    # left edge each kind justifies to, so a full line can be told from a
+    # paragraph's short last line
+    left_edge = {}
+    for kind in ("body", "quote", "cite", "note"):
+        xs = [l["x0"] for l in lines if l["kind"] == kind]
+        if len(xs) >= 3:
+            left_edge[kind] = min(xs)
     all_gaps = sorted(g for v in by_kind.values() for g in v)
     default = all_gaps[len(all_gaps) // 2] if all_gaps else 27.0
 
@@ -239,7 +250,13 @@ def paragraphs(lines, page_width):
             elif gap < 0:            # new page or new column
                 start_new = True
             elif gap > leadings.get(l["kind"], default) * 1.25:
-                start_new = True
+                # a paragraph does not end in the middle of a sentence on a
+                # line that runs the full width of the column
+                edge = left_edge.get(prev["kind"])
+                # an apostrophe usually marks a Hebrew abbreviation, not an end
+                unfinished = not re.search(r"[.!?:;)\]]\s*$", prev["text"].translate(BIDI))
+                if not (unfinished and edge is not None and prev["x0"] - edge < 6):
+                    start_new = True
             elif l["kinds"][0] == "bold" and prev["kinds"][-1] != "bold":
                 start_new = True
         if start_new:
@@ -341,10 +358,11 @@ def mark_missing_refs(page_blocks, refs):
     return page_blocks
 
 
-def convert(path):
+def convert(path, per_page=False):
+    """Booklet as HTML blocks; with per_page, [(page number, blocks)] instead."""
     doc = pymupdf.open(path)
     texts = all_page_texts(path)
-    out, notes = [], []
+    out, notes, pages = [], [], []
     for pno in range(doc.page_count):
         lines = page_lines(texts[pno] if pno < len(texts) else "", doc, pno)
         page_blocks, page_refs = [], []
@@ -368,8 +386,12 @@ def convert(path):
                         notes.append(f"<li{attr}>{item}</li>")
                         if ref:
                             page_refs.append(ref)
-            elif para["kind"] == "cite" and len(re.sub(r"<[^>]+>", "", text)) > 24:
-                page_blocks.append(f'<p class="cite{" " + cls if cls else ""}">{text}</p>')
+            elif para["kind"] == "cite":
+                short = len(re.sub(r"<[^>]+>", "", text)) <= 24
+                style = "cite" if not short else ""
+                page_blocks.append(
+                    f'<p class="{(style + " " + cls).strip()}">{text}</p>' if (style or cls)
+                    else f"<p>{text}</p>")
             elif para["kind"] == "quote" and text.startswith('<em class="src">') and text.endswith("</em>") \
                     and re.fullmatch(r'(?:<em class="src">.*?</em>\s*)+', text, re.S):
                 inner = text.replace('<em class="src">', "").replace("</em>", "")
@@ -378,6 +400,7 @@ def convert(path):
                 page_blocks.append(f'<p class="{cls}">{text}</p>' if cls else f"<p>{text}</p>")
 
         page_blocks = mark_missing_refs(page_blocks, page_refs)
+        own_blocks = list(page_blocks)
         # a paragraph interrupted by a page break continues on the next page
         prev = next((i for i in range(len(out) - 1, -1, -1)
                      if not out[i].startswith("<aside")), None)
@@ -394,4 +417,6 @@ def convert(path):
         if notes:
             out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")
             notes = []
-    return out
+            own_blocks.append(out[-1])
+        pages.append((pno + 1, own_blocks))
+    return pages if per_page else out
