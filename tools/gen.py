@@ -204,8 +204,7 @@ def write_node(node, trail):
         preamble, sections = build_reading(FRAGMENTS[key])
         h += f'''
     <div class="reader__actions">
-      <a class="btn" href="../assets/pdf/{node['pdf']}" target="_blank" rel="noopener">החוברת כקובץ PDF</a>
-      <a class="btn" href="../assets/pdf/{node['pdf']}" download>הורדה</a>
+      <a class="btn" href="../assets/pdf/{node['pdf']}" download>הורדה כקובץ PDF</a>
     </div>
 '''
         if sections:

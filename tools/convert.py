@@ -45,6 +45,22 @@ def tidy(text):
     return text.strip()
 
 
+# the booklets set the body in 16pt; other sizes keep their proportion
+SIZE_CLASS = ((11.5, "s-xs"), (14.5, "s-sm"), (17.0, ""), (19.5, "s-md"),
+              (22.0, "s-lg"), (999, "s-xl"))
+
+
+def size_class(para):
+    sizes = sorted(m[1] for line in para["lines"] for m in line["metas"])
+    if not sizes:
+        return ""
+    median = sizes[len(sizes) // 2]
+    for limit, name in SIZE_CLASS:
+        if median < limit:
+            return name
+    return ""
+
+
 def classify(font, size):
     if font.startswith("Arial"):
         return "pageno"
@@ -317,6 +333,7 @@ def convert(path):
             text = render_words(para)
             if not text or DIGITS_ONLY.match(re.sub(r"<[^>]+>", "", text)):
                 continue
+            cls = size_class(para)
             if para["kind"] == "heading":
                 page_blocks.append(
                     f"<h2>{re.sub(r'^<em class=.src.>|</em>$', '', text).strip(' -')}</h2>")
@@ -333,12 +350,12 @@ def convert(path):
                         if ref:
                             page_refs.append(ref)
             elif para["kind"] == "cite" and len(re.sub(r"<[^>]+>", "", text)) > 24:
-                page_blocks.append(f'<p class="cite">{text}</p>')
+                page_blocks.append(f'<p class="cite{" " + cls if cls else ""}">{text}</p>')
             elif para["kind"] == "quote" and text.startswith('<em class="src">') and text.endswith("</em>"):
                 inner = text[len('<em class="src">'):-len("</em>")]
-                page_blocks.append(f'<p class="src">{inner}</p>')
+                page_blocks.append(f'<p class="src{" " + cls if cls else ""}">{inner}</p>')
             else:
-                page_blocks.append(f"<p>{text}</p>")
+                page_blocks.append(f'<p class="{cls}">{text}</p>' if cls else f"<p>{text}</p>")
 
         page_blocks = mark_missing_refs(page_blocks, page_refs)
         # a paragraph interrupted by a page break continues on the next page

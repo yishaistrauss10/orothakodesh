@@ -441,6 +441,20 @@ body {
   margin-bottom: 1.15rem;
 }
 
+/* Font sizes follow the proportions of the printed booklets, where the
+   body is set in 16pt. */
+
+.reading .s-xs { font-size: 0.8em; }
+.reading .s-sm { font-size: 0.88em; }
+.reading .s-md { font-size: 1.1em; }
+.reading .s-lg { font-size: 1.22em; }
+.reading .s-xl { font-size: 1.4em; line-height: 1.6; }
+
+/* The quoted phrase that opens an explanation is set larger in the booklet. */
+.reading em.src {
+  font-size: 1.08em;
+}
+
 /* A passage quoted from another work: italic, indented, marked with a dash. */
 .reading .cite {
   position: relative;
@@ -632,7 +646,21 @@ body {
     text-align: start;
   }
 
-  /* A passage quoted from another work: italic, indented, marked with a dash. */
+  /* Font sizes follow the proportions of the printed booklets, where the
+   body is set in 16pt. */
+
+.reading .s-xs { font-size: 0.8em; }
+.reading .s-sm { font-size: 0.88em; }
+.reading .s-md { font-size: 1.1em; }
+.reading .s-lg { font-size: 1.22em; }
+.reading .s-xl { font-size: 1.4em; line-height: 1.6; }
+
+/* The quoted phrase that opens an explanation is set larger in the booklet. */
+.reading em.src {
+  font-size: 1.08em;
+}
+
+/* A passage quoted from another work: italic, indented, marked with a dash. */
 .reading .cite {
   position: relative;
   margin: 0 0 1.15rem;
