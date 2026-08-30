@@ -73,15 +73,32 @@ def classify(font, size):
     return "body"
 
 
+def stroked_boxes(page):
+    """Boxes of text Word emboldened by stroking it (render mode 1 or 2).
+
+    Nothing in the font name or flags records that, but it is what makes the
+    quoted source passages look heavier than the text around them.
+    """
+    boxes = []
+    for span in page.get_texttrace():
+        if span.get("type") in (1, 2):
+            boxes.append(pymupdf.Rect(span["bbox"]))
+    return boxes
+
+
 def mupdf_words(page):
-    """[(word, font, size, x0, x1, y)] in reading order."""
+    """[(word, font, size, x0, x1, y, bold)] in reading order."""
+    boxes = stroked_boxes(page)
     out = []
     for b in page.get_text("dict")["blocks"]:
         for line in b.get("lines", []):
             for s in line["spans"]:
                 x0, y0, x1, y1 = s["bbox"]
+                mid = pymupdf.Point((x0 + x1) / 2, (y0 + y1) / 2)
+                bold = "Bold" in s["font"] or any(mid in r for r in boxes)
                 for w in s["text"].split():
-                    out.append((w.translate(BIDI), s["font"], round(s["size"]), x0, x1, y0))
+                    out.append((w.translate(BIDI), s["font"], round(s["size"]),
+                                x0, x1, y0, bold))
     return out
 
 
@@ -140,7 +157,7 @@ def page_lines(raw, doc, pno):
     small_numbers = {w.strip() for w, font, size, *_ in mw
                      if size <= 12 and re.fullmatch(r"\d{1,3}", w.strip())}
 
-    last = ("David", 16, 0.0, 0.0, 0.0)
+    last = ("David", 16, 0.0, 0.0, 0.0, False)
     for i, m in enumerate(meta):
         if m is None:
             meta[i] = last
@@ -240,10 +257,9 @@ def render_words(para):
     out = []
     for line in para["lines"]:
         for w, m in zip(line["words"], line["metas"]):
-            kind = classify(m[0], m[1])
-            out.append((w, kind))
+            out.append((w, classify(m[0], m[1]), bool(m[5]) if len(m) > 5 else False))
     chunks, buf, buf_kind = [], [], None
-    for w, kind in out:
+    for w, kind, bold in out:
         if kind == "quote":
             k = "quote"
         elif kind == "bold" and para["kind"] != "heading":
@@ -252,19 +268,22 @@ def render_words(para):
             k = "note"
         else:
             k = "text"
-        if k != buf_kind and buf:
+        key = (k, bold and k != "note")
+        if key != buf_kind and buf:
             chunks.append((buf_kind, buf)); buf = []
-        buf_kind = k
+        buf_kind = key
         buf.append(w)
     if buf:
         chunks.append((buf_kind, buf))
 
     parts = []
-    for k, ws in chunks:
+    for (k, bold), ws in chunks:
         text = tidy(" ".join(ws))
         if not text:
             continue
         esc = html.escape(text, quote=False)
+        if bold and k in ("quote", "text"):
+            esc = f"<b>{esc}</b>"
         if k == "quote":
             parts.append(f'<em class="src">{esc}</em>')
         elif k == "bold":
@@ -351,8 +370,9 @@ def convert(path):
                             page_refs.append(ref)
             elif para["kind"] == "cite" and len(re.sub(r"<[^>]+>", "", text)) > 24:
                 page_blocks.append(f'<p class="cite{" " + cls if cls else ""}">{text}</p>')
-            elif para["kind"] == "quote" and text.startswith('<em class="src">') and text.endswith("</em>"):
-                inner = text[len('<em class="src">'):-len("</em>")]
+            elif para["kind"] == "quote" and text.startswith('<em class="src">') and text.endswith("</em>") \
+                    and re.fullmatch(r'(?:<em class="src">.*?</em>\s*)+', text, re.S):
+                inner = text.replace('<em class="src">', "").replace("</em>", "")
                 page_blocks.append(f'<p class="src{" " + cls if cls else ""}">{inner}</p>')
             else:
                 page_blocks.append(f'<p class="{cls}">{text}</p>' if cls else f"<p>{text}</p>")

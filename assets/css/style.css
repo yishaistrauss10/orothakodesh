@@ -14,6 +14,9 @@
   --color-border: #e6dfd1;
 
   --font-body: "Heebo", "Segoe UI", Arial, sans-serif;
+  /* The booklets set the quoted source in a different face from the
+     commentary; a serif Hebrew face gives the same contrast on screen. */
+  --font-source: "Frank Ruhl Libre", "David Libre", Georgia, serif;
   --max-width: 68rem;
   --radius: 12px;
   --shadow: 0 1px 2px rgba(35, 32, 27, 0.05), 0 8px 24px rgba(35, 32, 27, 0.06);
@@ -430,11 +433,19 @@ body {
   margin: 0 0 1.15rem;
 }
 
-/* The booklets set the quoted source in italics; the site does the same. */
+/* The booklets set the quoted source in italics, in a face of its own. */
 .reading .src,
 .reading p.src {
+  font-family: var(--font-source);
   font-style: italic;
-  color: #2f2a22;
+  font-weight: 500;
+  color: #2c2417;
+}
+
+/* Words the booklet emboldens by stroking them stay bold here too. */
+.reading .src b,
+.reading p.src b {
+  font-weight: 700;
 }
 
 .reading p.src {
@@ -458,6 +469,7 @@ body {
 /* A passage quoted from another work: italic, indented, marked with a dash. */
 .reading .cite {
   position: relative;
+  font-family: var(--font-source);
   margin: 0 0 1.15rem;
   padding-inline-start: 1.4rem;
   padding-inline-end: 1.4rem;
@@ -663,6 +675,7 @@ body {
 /* A passage quoted from another work: italic, indented, marked with a dash. */
 .reading .cite {
   position: relative;
+  font-family: var(--font-source);
   margin: 0 0 1.15rem;
   padding-inline-start: 1.4rem;
   padding-inline-end: 1.4rem;
