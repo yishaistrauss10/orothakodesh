@@ -28,6 +28,14 @@ def tidy(text):
     text = PUNCT_BEFORE.sub(r"\1 ", text)
     # a space wrongly inserted after a vowel point: "מִֽ י" -> "מִֽי"
     text = COMBINING.sub(r"\1", text)
+    # parentheses: mirrored pairs, stray spaces, punctuation pushed inside
+    text = re.sub(r"\)(?=[֐-ת])([^()]{1,60}?)(?<=[֐-ת])\(", r"(\1)", text)
+    text = re.sub(r"\(\s+", "(", text)
+    text = re.sub(r"\s+\)", ")", text)
+    text = re.sub(r"\((\s*[:;,.])", r"\1 (", text)
+    text = re.sub(r"(?<=[֐-ת])\(", " (", text)
+    text = re.sub(r"\)(?=[֐-ת])", ") ", text)
+    text = re.sub(r"\((\d{1,3})(?=[֐-ת])", r"(\1 ", text)
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(r"\s+(['\"])(?=\s|$)", r"\1", text)
     # "word -next" -> "word - next" (the dash separating a quote from its explanation)
@@ -41,7 +49,7 @@ def classify(font, size):
     if "Narkisim" in font:
         return "quote"
     if "Bold" in font and size >= 15:
-        return "heading"
+        return "bold"
     if size <= 13:
         return "note"
     return "body"
@@ -97,48 +105,58 @@ def page_lines(raw, doc, pno):
         if not idx or not text.strip():
             continue
         kinds = [classify(meta[i][0], meta[i][1]) for i in idx]
-        if kinds.count("note") > len(kinds) / 2:
+        if all(k == "bold" for k in kinds):
+            kind = "heading"
+        elif kinds.count("note") > len(kinds) / 2:
             kind = "note"
         elif kinds.count("quote") > len(kinds) / 2:
             kind = "quote"
         else:
-            kind = kinds[0]
+            kind = "body" if kinds[0] == "bold" else kinds[0]
         if all(k == "pageno" for k in kinds) or DIGITS_ONLY.match(text.translate(BIDI)):
             continue
         x0 = min(meta[i][2] for i in idx)
         x1 = max(meta[i][3] for i in idx)
+        y = min(meta[i][4] for i in idx)
         lines.append(dict(text=text, kind=kind, kinds=kinds,
                           words=[words[i] for i in idx],
-                          metas=[meta[i] for i in idx], x0=x0, x1=x1))
+                          metas=[meta[i] for i in idx], x0=x0, x1=x1, y=y))
     return lines
 
 
 def paragraphs(lines, page_width):
-    """Group lines into paragraphs, splitting on short lines and kind changes."""
+    """Group lines into paragraphs.
+
+    The booklets separate paragraphs with extra vertical space, so the gap
+    between consecutive baselines is the signal: a gap noticeably larger than
+    the usual line spacing starts a new paragraph.
+    """
     if not lines:
         return []
-    body_widths = [l["x1"] - l["x0"] for l in lines if l["kind"] in ("body", "quote")]
-    full = max(body_widths) if body_widths else page_width
-    paras, cur = [], None
+    gaps = sorted(b["y"] - a["y"] for a, b in zip(lines, lines[1:])
+                  if 0 < b["y"] - a["y"] < 200 and a["kind"] == b["kind"])
+    leading = gaps[len(gaps) // 2] if gaps else 27.0
 
-    for i, l in enumerate(lines):
+    paras, cur = [], None
+    for prev, l in zip([None] + lines[:-1], lines):
         start_new = cur is None
         if not start_new:
-            prev = cur["lines"][-1]
+            gap = l["y"] - prev["y"]
             if l["kind"] == "heading" or prev["kind"] == "heading":
                 start_new = True
             elif (l["kind"] == "note") != (prev["kind"] == "note"):
                 start_new = True
-            elif l["kind"] == "quote" and prev["kind"] != "quote":
+            elif gap < 0:            # new page or new column
                 start_new = True
-            elif ((prev["x1"] - prev["x0"]) < 0.92 * full
-                  and re.search(r"[.!?:]\s*$", prev["text"].translate(BIDI))):
-                start_new = True  # previous line ended short and closed a sentence
+            elif gap > leading * 1.45:
+                start_new = True
         if start_new:
             cur = dict(kind=l["kind"], lines=[l])
             paras.append(cur)
         else:
             cur["lines"].append(l)
+            if l["kind"] == "quote" and cur["kind"] != "quote":
+                pass
     return paras
 
 
@@ -151,7 +169,14 @@ def render_words(para):
             out.append((w, kind))
     chunks, buf, buf_kind = [], [], None
     for w, kind in out:
-        k = "quote" if kind == "quote" else ("note" if kind == "note" and para["kind"] != "note" else "text")
+        if kind == "quote":
+            k = "quote"
+        elif kind == "bold" and para["kind"] != "heading":
+            k = "bold"
+        elif kind == "note" and para["kind"] != "note":
+            k = "note"
+        else:
+            k = "text"
         if k != buf_kind and buf:
             chunks.append((buf_kind, buf)); buf = []
         buf_kind = k
@@ -166,15 +191,30 @@ def render_words(para):
             continue
         esc = html.escape(text, quote=False)
         if k == "quote":
-            parts.append(f'<b class="src">{esc}</b>')
+            parts.append(f'<em class="src">{esc}</em>')
+        elif k == "bold":
+            parts.append(f"<b>{esc}</b>")
         elif k == "note" and re.fullmatch(r"\d+[.,]?", text):
             parts.append(f'<sup>{esc}</sup>')
         else:
             parts.append(esc)
-    joined = tidy(" ".join(parts)).replace(" </b>", "</b> ").replace("<sup> ", "<sup>")
+    joined = tidy(" ".join(parts)).replace(" </em>", "</em> ").replace(" </b>", "</b> ")
+    joined = joined.replace("<sup> ", "<sup>")
     # the dash that separates a quoted phrase from its explanation
     joined = re.sub(r">\s*-(?=[֐-ת])", "> - ", joined)
     return joined
+
+
+def split_notes(para, text):
+    """A footnote block can hold several notes; each starts with its number."""
+    marks = [i for i, (w, m) in enumerate(
+        (w, m) for line in para["lines"] for w, m in zip(line["words"], line["metas"]))
+        if m[1] <= 11 and re.fullmatch(r"\d+", w.translate(BIDI))]
+    text = re.sub(r"^\s*<sup>\d+[.,]?</sup>\s*|^\s*\d+(?=[֐-ת])", "", text)
+    if len(marks) <= 1:
+        return [text] if text.strip() else []
+    parts = re.split(r"\s*<sup>(?:\d+)</sup>\s*", text)
+    return [p.strip() for p in parts if p.strip()]
 
 
 def convert(path):
@@ -190,13 +230,20 @@ def convert(path):
             if para["kind"] == "heading":
                 out.append(f"<h2>{re.sub(r'^<b class=.src.>|</b>$', '', text).strip(' -')}</h2>")
             elif para["kind"] == "note":
-                notes.append("<li>" + re.sub(r"^\s*<sup>\d+[.,]?</sup>\s*|^\s*\d+(?=[֐-ת])", "", text) + "</li>")
-            elif para["kind"] == "quote" and text.startswith("<b class=\"src\">") and text.endswith("</b>"):
+                items = split_notes(para, text)
+                starts_note = bool(para["lines"] and para["lines"][0]["metas"]
+                                   and re.fullmatch(r"\d+", para["lines"][0]["words"][0].translate(BIDI)))
+                for i, item in enumerate(items):
+                    if i == 0 and notes and not starts_note:
+                        notes[-1] = notes[-1][:-len("</li>")] + " " + item + "</li>"
+                    else:
+                        notes.append(f"<li>{item}</li>")
+            elif para["kind"] == "quote" and text.startswith("<em class=\"src\">") and text.endswith("</em>"):
                 if notes:
                     out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")
                     notes = []
-                inner = text[len('<b class="src">'):-len("</b>")]
-                out.append(f'<blockquote class="src">{inner}</blockquote>')
+                inner = text[len('<em class="src">'):-len("</em>")]
+                out.append(f'<p class="src">{inner}</p>')
             else:
                 if notes:
                     out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")

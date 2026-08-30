@@ -13,7 +13,8 @@ def strip_tags(s):
     return re.sub(r"<[^>]+>", "", s).strip()
 
 def clean_section_title(t):
-    t = re.sub(r"\(\s*\d+\s*", "(", t)      # drop the footnote number glued to "(עמוד"
+    t = html.escape(t, quote=False)
+    t = re.sub(r"\s*\(\s*\d+\s+", " (", t)   # drop the footnote number glued to "(עמוד"
     t = re.sub(r"(?<=[֐-ת'])\(", " (", t)   # "האלוהי(עמוד" -> "האלוהי (עמוד"
     t = re.sub(r"\s*-\s*$", "", t)
     return re.sub(r"\s{2,}", " ", t).strip()
@@ -24,8 +25,11 @@ def is_section(text):
 
 
 def build(blocks):
-    """Returns (toc_items, html_string). toc_items: [(anchor, title)]."""
-    # find where the front matter ends
+    """Split a booklet into sections.
+
+    Returns (preamble_html, sections) where sections is a list of
+    (anchor, plain title, html) - one entry per numbered passage.
+    """
     start = 0
     for i, b in enumerate(blocks):
         t = strip_tags(b)
@@ -34,28 +38,28 @@ def build(blocks):
             break
     else:
         for i, b in enumerate(blocks):
-            if b.startswith("<blockquote"):
+            if b.startswith("<p class=\"src\"") or b.startswith("<blockquote"):
                 start = i
                 break
     body = blocks[start:]
 
-    out, toc, n = [], [], 0
+    preamble, sections = [], []
+    cur = None
     for b in body:
         text = strip_tags(b)
-        if not text or FRONT_MATTER.search(text):
-            continue
-        if DOT_LEADERS.search(text):
+        if not text or FRONT_MATTER.search(text) or DOT_LEADERS.search(text):
             continue
         if is_section(text):
-            n += 1
-            anchor = f"p{n}"
             title = clean_section_title(text)
-            toc.append((anchor, title))
-            out.append(f'<h2 id="{anchor}" class="section-title">{html.escape(title, quote=False)}</h2>')
-        elif SUBHEAD.match(text):
-            out.append(f'<h3>{html.escape(clean_section_title(text), quote=False)}</h3>')
-        elif b.startswith("<h2>"):
-            out.append("<h3>" + b[4:-5] + "</h3>")
-        else:
-            out.append(b)
-    return toc, "\n      ".join(out)
+            anchor = f"p{len(sections) + 1}"
+            heading = f'<h2 class="section-title">{title}</h2>'
+            cur = dict(anchor=anchor, title=re.sub(r"<[^>]+>", "", title), html=[heading])
+            sections.append(cur)
+            continue
+        block = b
+        if b.startswith("<h2>"):
+            block = "<h3>" + b[4:-5] + "</h3>"
+        (cur["html"] if cur else preamble).append(block)
+
+    return ("\n      ".join(preamble),
+            [(s["anchor"], s["title"], "\n        ".join(s["html"])) for s in sections])

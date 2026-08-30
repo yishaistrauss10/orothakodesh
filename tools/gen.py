@@ -201,29 +201,31 @@ def write_node(node, trail):
 
     if node["pdf"]:
         key = node["pdf"][:-4]
-        toc, reading = build_reading(FRAGMENTS[key])
+        preamble, sections = build_reading(FRAGMENTS[key])
         h += f'''
     <div class="reader__actions">
       <a class="btn" href="../assets/pdf/{node['pdf']}" target="_blank" rel="noopener">החוברת כקובץ PDF</a>
       <a class="btn" href="../assets/pdf/{node['pdf']}" download>הורדה</a>
     </div>
 '''
-        if toc:
+        if sections:
             items = "\n        ".join(
-                f'<li><a href="#{a}">{t}</a></li>' for a, t in toc)
+                f'<li><a class="picker__item" href="#{a}">{t}</a></li>' for a, t, _ in sections)
             h += f'''
-    <details class="toc">
-      <summary>תוכן העניינים ({len(toc)} פסקאות)</summary>
-      <ol>
+    <nav class="picker" aria-label="בחירת פסקה">
+      <p class="picker__label">פסקאות</p>
+      <ol class="picker__list">
         {items}
       </ol>
-    </details>
+    </nav>
 '''
-        h += f'''
-    <article class="reading">
-      {reading}
-    </article>
-'''
+        h += '\n    <article class="reading">\n'
+        if preamble:
+            h += f'      {preamble}\n'
+        for a, t, body in sections:
+            h += f'      <section class="piska" id="{a}" data-title="{t}">\n        {body}\n      </section>\n'
+        h += '    </article>\n'
+
     if node["children"]:
         heading = "תתי-נושאים"
         if any(c["slug"].count("seder") for c in node["children"]):
