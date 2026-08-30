@@ -15,6 +15,7 @@ LETTERS = re.compile(r"[^֐-תa-zA-Z0-9]")
 COMBINING = re.compile(r"([֑-ׇ])\s+(?=\S)")
 PUNCT_BEFORE = re.compile(r"\s+([.,;:!?])(?=\S)")
 DIGITS_ONLY = re.compile(r"^[\d\s.]+$")
+PASSAGE_START = re.compile(r"^\s*פסקה\s")
 
 
 def norm(w):
@@ -26,6 +27,7 @@ def tidy(text):
     text = text.translate(BIDI)
     # "word ,next" -> "word, next"
     text = PUNCT_BEFORE.sub(r"\1 ", text)
+    text = re.sub(r"(?<=[^\s.,;:!?])\s+([.,;:!?])(?:\s|$)", r"\1 ", text)
     # a space wrongly inserted after a vowel point: "מִֽ י" -> "מִֽי"
     text = COMBINING.sub(r"\1", text)
     # parentheses: mirrored pairs, stray spaces, punctuation pushed inside
@@ -81,8 +83,12 @@ def page_lines(raw, doc, pno):
     words, line_of = [], []
     for li, line in enumerate(tl):
         for w in line.split():
-            words.append(w)
-            line_of.append(li)
+            # a footnote marker is often glued to the word before or after it;
+            # PyMuPDF keeps it as its own span, so split it here too
+            for piece in re.findall(r"\d+|[^\d]+", w) if re.search(r"\d", w) else [w]:
+                if piece:
+                    words.append(piece)
+                    line_of.append(li)
 
     mw = mupdf_words(doc[pno])
     sm = difflib.SequenceMatcher(None, [norm(w) for w in words],
@@ -92,12 +98,19 @@ def page_lines(raw, doc, pno):
         for k in range(n):
             meta[a + k] = mw[b + k][1:]
 
+    small_numbers = {w.strip() for w, font, size, *_ in mw
+                     if size <= 12 and re.fullmatch(r"\d{1,3}", w.strip())}
+
     last = ("David", 16, 0.0, 0.0, 0.0)
     for i, m in enumerate(meta):
         if m is None:
             meta[i] = last
         else:
             last = m
+
+    for i, w in enumerate(words):
+        if w in small_numbers and meta[i][1] > 12:
+            meta[i] = ("David", 11) + tuple(meta[i][2:])
 
     lines = []
     for li, text in enumerate(tl):
@@ -117,7 +130,8 @@ def page_lines(raw, doc, pno):
             continue
         x0 = min(meta[i][2] for i in idx)
         x1 = max(meta[i][3] for i in idx)
-        y = min(meta[i][4] for i in idx)
+        ys = sorted(meta[i][4] for i in idx)
+        y = ys[len(ys) // 2]   # median: a superscript must not shift the line
         lines.append(dict(text=text, kind=kind, kinds=kinds,
                           words=[words[i] for i in idx],
                           metas=[meta[i] for i in idx], x0=x0, x1=x1, y=y))
@@ -133,9 +147,14 @@ def paragraphs(lines, page_width):
     """
     if not lines:
         return []
-    gaps = sorted(b["y"] - a["y"] for a, b in zip(lines, lines[1:])
-                  if 0 < b["y"] - a["y"] < 200 and a["kind"] == b["kind"])
-    leading = gaps[len(gaps) // 2] if gaps else 27.0
+    by_kind = {}
+    for a, b in zip(lines, lines[1:]):
+        gap = b["y"] - a["y"]
+        if 0 < gap < 200 and a["kind"] == b["kind"]:
+            by_kind.setdefault(a["kind"], []).append(gap)
+    leadings = {k: sorted(v)[len(v) // 2] for k, v in by_kind.items() if v}
+    all_gaps = sorted(g for v in by_kind.values() for g in v)
+    default = all_gaps[len(all_gaps) // 2] if all_gaps else 27.0
 
     paras, cur = [], None
     for prev, l in zip([None] + lines[:-1], lines):
@@ -148,7 +167,9 @@ def paragraphs(lines, page_width):
                 start_new = True
             elif gap < 0:            # new page or new column
                 start_new = True
-            elif gap > leading * 1.45:
+            elif gap > leadings.get(l["kind"], default) * 1.25:
+                start_new = True
+            elif l["kinds"][0] == "bold" and prev["kinds"][-1] != "bold":
                 start_new = True
         if start_new:
             cur = dict(kind=l["kind"], lines=[l])
@@ -199,22 +220,52 @@ def render_words(para):
         else:
             parts.append(esc)
     joined = tidy(" ".join(parts)).replace(" </em>", "</em> ").replace(" </b>", "</b> ")
-    joined = joined.replace("<sup> ", "<sup>")
+    joined = joined.replace("<sup> ", "<sup>").replace(" <sup>", "<sup>")
     # the dash that separates a quoted phrase from its explanation
     joined = re.sub(r">\s*-(?=[֐-ת])", "> - ", joined)
     return joined
 
 
 def split_notes(para, text):
-    """A footnote block can hold several notes; each starts with its number."""
+    """A footnote block can hold several notes; each starts with its number.
+
+    Returns [(reference number or None, text)].
+    """
     marks = [i for i, (w, m) in enumerate(
         (w, m) for line in para["lines"] for w, m in zip(line["words"], line["metas"]))
         if m[1] <= 11 and re.fullmatch(r"\d+", w.translate(BIDI))]
-    text = re.sub(r"^\s*<sup>\d+[.,]?</sup>\s*|^\s*\d+(?=[֐-ת])", "", text)
+    lead = re.match(r"^\s*(?:<sup>(\d+)[.,]?</sup>|(\d+)\s*(?=[֐-ת]))", text)
+    first_ref = next((g for g in (lead.groups() if lead else ()) if g), None)
+    text = re.sub(r"^\s*<sup>\d+[.,]?</sup>\s*|^\s*\d+\s*(?=[֐-ת])", "", text)
     if len(marks) <= 1:
-        return [text] if text.strip() else []
-    parts = re.split(r"\s*<sup>(?:\d+)</sup>\s*", text)
-    return [p.strip() for p in parts if p.strip()]
+        return [(first_ref, text)] if text.strip() else []
+    parts = re.split(r"\s*<sup>(\d+)</sup>\s*", text)
+    out, refs = [], [first_ref]
+    for i, part in enumerate(parts):
+        if i % 2:
+            refs.append(part)
+        elif part.strip():
+            out.append((refs[len(out)] if len(out) < len(refs) else None, part.strip()))
+    return out
+
+
+def mark_missing_refs(page_blocks, refs):
+    """Wrap footnote numbers the font data did not flag as superscript.
+
+    Only a number that appears exactly once in the page body is wrapped, so
+    ordinary numbers in the text are left alone.
+    """
+    for ref in refs:
+        if any(f"<sup>{ref}</sup>" in b for b in page_blocks):
+            continue
+        pattern = re.compile(r"(?<![\d>])" + re.escape(ref) + r"(?![\d<])")
+        hits = [(i, len(pattern.findall(b))) for i, b in enumerate(page_blocks)]
+        if sum(n for _, n in hits) != 1:
+            continue
+        for i, n in hits:
+            if n:
+                page_blocks[i] = pattern.sub(f"<sup>{ref}</sup>", page_blocks[i], count=1)
+    return page_blocks
 
 
 def convert(path):
@@ -223,32 +274,46 @@ def convert(path):
     out, notes = [], []
     for pno in range(doc.page_count):
         lines = page_lines(texts[pno] if pno < len(texts) else "", doc, pno)
+        page_blocks, page_refs = [], []
         for para in paragraphs(lines, doc[pno].rect.width):
             text = render_words(para)
             if not text or DIGITS_ONLY.match(re.sub(r"<[^>]+>", "", text)):
                 continue
             if para["kind"] == "heading":
-                out.append(f"<h2>{re.sub(r'^<b class=.src.>|</b>$', '', text).strip(' -')}</h2>")
+                page_blocks.append(
+                    f"<h2>{re.sub(r'^<em class=.src.>|</em>$', '', text).strip(' -')}</h2>")
             elif para["kind"] == "note":
                 items = split_notes(para, text)
-                starts_note = bool(para["lines"] and para["lines"][0]["metas"]
+                starts_note = bool(para["lines"] and para["lines"][0]["words"]
                                    and re.fullmatch(r"\d+", para["lines"][0]["words"][0].translate(BIDI)))
-                for i, item in enumerate(items):
+                for i, (ref, item) in enumerate(items):
                     if i == 0 and notes and not starts_note:
                         notes[-1] = notes[-1][:-len("</li>")] + " " + item + "</li>"
                     else:
-                        notes.append(f"<li>{item}</li>")
-            elif para["kind"] == "quote" and text.startswith("<em class=\"src\">") and text.endswith("</em>"):
-                if notes:
-                    out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")
-                    notes = []
+                        attr = f' data-ref="{ref}"' if ref else ""
+                        notes.append(f"<li{attr}>{item}</li>")
+                        if ref:
+                            page_refs.append(ref)
+            elif para["kind"] == "quote" and text.startswith('<em class="src">') and text.endswith("</em>"):
                 inner = text[len('<em class="src">'):-len("</em>")]
-                out.append(f'<p class="src">{inner}</p>')
+                page_blocks.append(f'<p class="src">{inner}</p>')
             else:
-                if notes:
-                    out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")
-                    notes = []
-                out.append(f"<p>{text}</p>")
+                page_blocks.append(f"<p>{text}</p>")
+
+        page_blocks = mark_missing_refs(page_blocks, page_refs)
+        # a paragraph interrupted by a page break continues on the next page
+        prev = next((i for i in range(len(out) - 1, -1, -1)
+                     if not out[i].startswith("<aside")), None)
+        if (prev is not None and page_blocks
+                and out[prev].startswith("<p") and page_blocks[0].startswith("<p")
+                and out[prev].split(">")[0] == page_blocks[0].split(">")[0]
+                and not re.search(r"[.!?:]\s*</p>$", out[prev])
+                and not page_blocks[0].startswith("<p><b>")
+                and not PASSAGE_START.match(re.sub(r"<[^>]+>", "", page_blocks[0]))
+                and not PASSAGE_START.match(re.sub(r"<[^>]+>", "", out[prev]))):
+            head = page_blocks.pop(0)
+            out[prev] = out[prev][:-len("</p>")] + " " + head[len(head.split(">")[0]) + 1:]
+        out.extend(page_blocks)
         if notes:
             out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")
             notes = []
