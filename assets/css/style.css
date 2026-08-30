@@ -367,27 +367,110 @@ body {
   border-color: #755c31;
 }
 
-.reader__frame {
-  display: block;
-  width: 100%;
-  height: min(80vh, 900px);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
+/* ---------- Reading view ---------- */
+
+.reading {
+  max-width: 40rem;
+  margin: 0 auto;
+  font-size: 1.12rem;
+  line-height: 2;
+  text-align: justify;
 }
 
-.reader__fallback {
-  margin: 0;
-  padding: 2rem 1.5rem;
+.reading p {
+  margin: 0 0 1.1rem;
+}
+
+.reading .src {
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.reading blockquote.src {
+  margin: 0 0 1.1rem;
+  padding: 0.9rem 1.1rem;
+  border-inline-start: 3px solid var(--color-accent-soft);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  font-weight: 500;
+  color: #3a3226;
+}
+
+.reading .section-title {
+  margin: 2.75rem 0 1.1rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--color-border);
+  font-size: 1.4rem;
+  line-height: 1.5;
   text-align: center;
+  scroll-margin-top: 1rem;
+}
+
+.reading h3 {
+  margin: 1.75rem 0 0.75rem;
+  font-size: 1.1rem;
+  color: var(--color-accent);
+  text-align: start;
+}
+
+.reading sup {
+  font-size: 0.7em;
+  color: var(--color-accent);
+  vertical-align: super;
+  line-height: 0;
+}
+
+.reading .notes {
+  margin: 1.25rem 0 1.5rem;
+  padding: 0.9rem 1.1rem;
+  border-top: 1px solid var(--color-border);
+  font-size: 0.92rem;
+  line-height: 1.8;
   color: var(--color-muted);
 }
 
-/* Embedded PDFs are unreliable on phones - show the buttons only. */
-@media (max-width: 48rem) {
-  .reader__frame {
-    display: none;
-  }
+.reading .notes ol {
+  margin: 0;
+  padding-inline-start: 1.2rem;
+}
+
+.reading .notes li + li {
+  margin-top: 0.4rem;
+}
+
+/* ---------- Table of contents ---------- */
+
+.toc {
+  max-width: 40rem;
+  margin: 0 auto 2.5rem;
+  padding: 0.9rem 1.15rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.toc summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--color-accent);
+}
+
+.toc ol {
+  margin: 0.9rem 0 0;
+  padding-inline-start: 1.3rem;
+  color: var(--color-muted);
+  font-size: 0.97rem;
+  line-height: 1.9;
+}
+
+.toc a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.toc a:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
 }
 
 /* ---------- Phones ---------- */
@@ -481,6 +564,25 @@ body {
 
   .back-link {
     padding-block: 0.5rem;
+  }
+
+  .reading {
+    font-size: 1.08rem;
+    line-height: 1.95;
+    text-align: start;
+  }
+
+  .reading blockquote.src {
+    padding: 0.8rem 0.9rem;
+  }
+
+  .reading .section-title {
+    margin-top: 2.25rem;
+    font-size: 1.25rem;
+  }
+
+  .toc {
+    padding: 0.8rem 0.95rem;
   }
 }
 
