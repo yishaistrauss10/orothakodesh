@@ -72,7 +72,7 @@ v4 = N("kerech-4", "כרך ד'", "חמישה מאמרים. כל מאמר הוא 
         N("kerech-4-maamar-1-seder-1", "האהבה הכוללת", "סדר א'", pdf="v4-e1-s1.pdf", label="סדר א'"),
         N("kerech-4-maamar-1-seder-2", "היראה העליונה", "סדר ב'", pdf="v4-e1-s2.pdf", label="סדר ב'"),
     ]),
-    N("kerech-4-maamar-2", "מאמר שני", "החוברת טרם הוכנה.", label="מאמר שני"),
+    N("kerech-4-maamar-2", "הדבקות הכללית", "מאמר שני", pdf="v4-e2.pdf", label="מאמר שני"),
     N("kerech-4-maamar-3", "הענוה האצילית", "מאמר שלישי", pdf="v4-e3.pdf", label="מאמר שלישי"),
     N("kerech-4-maamar-4", "השלום", "מאמר רביעי", pdf="v4-e4.pdf", label="מאמר רביעי"),
     N("kerech-4-maamar-5", "מאמר חמישי", "החוברת טרם הוכנה.", label="מאמר חמישי"),

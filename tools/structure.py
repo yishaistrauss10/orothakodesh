@@ -2,10 +2,12 @@
 """Turn the converter's flat block list into a structured reading section."""
 import re, html
 
-SECTION = re.compile(r"^פסקה\s+([א-ת]{1,4})\s*['׳.]?\s*(?:[-–]\s*)?(?=[\u05d0-\u05ea(])")
+# "פסקה ט'", and also "ראש דבר, פסקה א'" where the passage is introduced
+SECTION = re.compile(r"^(?:ראש דבר[,\s]\s*)?פסקה\s+([א-ת]{1,4})\s*['׳.]?\s*(?:[-–]\s*)?(?=[\u05d0-\u05ea(\d])")
 # words that follow "פסקה" in ordinary prose rather than in a section heading
 NOT_A_NUMERAL = {"זאת", "זו", "זה", "אלו", "אלה", "הזאת", "אחת", "כזאת", "אחרת", "שלנו", "הזו"}
-DOT_LEADERS = re.compile(r"\.{4,}")
+# a table-of-contents line: dot leaders running to a page number
+DOT_LEADERS = re.compile(r"\.{4,}[\s.]*\d|\.{4,}[\s.]*\.{4,}")
 SUBHEAD = re.compile(r"^(נושא הפסקה|ביאור הפסקה)")
 # only ever applied to the cover pages, before the first passage begins
 FRONT_MATTER = re.compile(r"@|לא עבר הגהה|נכתב בחבורת|מייל|להערות|שיעורים באורות הקודש")
@@ -52,8 +54,9 @@ def build(blocks):
             start = i
             break
     else:
+        # no numbered passages: the cover pages end at the first real paragraph
         for i, b in enumerate(blocks):
-            if b.startswith('<p class="src"') or b.startswith("<blockquote"):
+            if len(strip_tags(b)) >= 120:
                 start = i
                 break
 
@@ -62,18 +65,26 @@ def build(blocks):
     notes = []
     for pos, b in enumerate(blocks[start:]):
         text = strip_tags(b)
-        if not text or DOT_LEADERS.search(text):
+        if not text:
+            continue
+        m = NOTE_BLOCK.fullmatch(b.strip())
+        # a footnote is filtered item by item, so one table-of-contents line
+        # among them does not take the whole block with it
+        if not m and DOT_LEADERS.search(text):
             continue
         if len(groups) == 1 and FRONT_MATTER.search(text):
             continue   # still on the cover pages
-        m = NOTE_BLOCK.fullmatch(b.strip())
         if m:
             for ref, note in NOTE_ITEM.findall(m.group(1)):
+                if DOT_LEADERS.search(note):
+                    continue   # a table-of-contents line, not a footnote
                 notes.append(dict(pos=pos, ref=ref, text=note.strip(),
                                   group=len(groups) - 1, used=False))
             continue
         if is_section(text):
-            title = clean_section_title(text)
+            # the footnote marker is dropped from the title text and re-added
+            # from the block's own <sup>, so it does not leave a stray digit
+            title = clean_section_title(strip_tags(MARKER.sub("", b)))
             refs = "".join(f"<sup>{r}</sup>" for r in MARKER.findall(b))
             groups.append(dict(anchor=f"p{len(groups)}",
                                title=TRAILING_REF.sub("", strip_tags(title)),
