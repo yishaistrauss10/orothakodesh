@@ -201,18 +201,43 @@ def page_lines(raw, doc, pno, vocab=None):
                 kind = "body"
         if DIGITS_ONLY.match(text.translate(BIDI)):
             continue   # a page number
-        x0 = min(meta[i][2] for i in idx)
-        x1 = max(meta[i][3] for i in idx)
-        ys = sorted(meta[i][4] for i in idx)
-        y = ys[len(ys) // 2]   # median: a superscript must not shift the line
-        indent = right_margin - x1
-        if kind == "body" and (dash_pending or indent > 15):
-            kind = "cite"   # a passage quoted from another work
-        dash_pending = False
-        lines.append(dict(text=text, kind=kind, kinds=kinds, indent=indent,
-                          words=[words[i] for i in idx],
-                          metas=[meta[i] for i in idx], x0=x0, x1=x1, y=y))
+        dash, dash_pending = dash_pending, False
+
+        # pdftotext sometimes puts a line of text and the footnote below it on
+        # one line; split them so the footnote is not read as body text
+        segments = [(idx, kind)]
+        tail = 0
+        while tail < len(idx) and classify(*meta[idx[-1 - tail]][:2]) == "note":
+            tail += 1
+        if kind != "note" and 3 <= tail < len(idx):
+            segments = [(idx[:-tail], kind), (idx[-tail:], "note")]
+
+        for seg, seg_kind in segments:
+            seg_text = text if len(segments) == 1 else " ".join(words[i] for i in seg)
+            x0 = min(meta[i][2] for i in seg)
+            x1 = max(meta[i][3] for i in seg)
+            ys = sorted(meta[i][4] for i in seg)
+            lines.append(dict(
+                text=seg_text, kind=seg_kind,
+                kinds=[classify(meta[i][0], meta[i][1]) for i in seg],
+                indent=right_margin - x1, dash=dash,
+                words=[words[i] for i in seg], metas=[meta[i] for i in seg],
+                x0=x0, x1=x1,
+                y=ys[len(ys) // 2]))   # median: a superscript must not shift it
+            dash = False
     return lines
+
+
+def mark_citations(paras):
+    """A quotation is indented as a block, so decide it per paragraph."""
+    for para in paras:
+        if para["kind"] != "body":
+            continue
+        indents = sorted(l["indent"] for l in para["lines"])
+        median = indents[len(indents) // 2]
+        if any(l["dash"] for l in para["lines"]) or median > 12:
+            para["kind"] = "cite"
+    return paras
 
 
 def paragraphs(lines, page_width):
@@ -249,8 +274,6 @@ def paragraphs(lines, page_width):
                 start_new = True
             elif (l["kind"] == "note") != (prev["kind"] == "note"):
                 start_new = True
-            elif (l["kind"] == "cite") != (prev["kind"] == "cite"):
-                start_new = True
             elif gap < 0:            # new page or new column
                 start_new = True
             elif gap > leadings.get(l["kind"], default) * 1.25:
@@ -278,14 +301,20 @@ def render_words(para):
     out = []
     for line in para["lines"]:
         for w, m in zip(line["words"], line["metas"]):
-            out.append((w, classify(m[0], m[1]), bool(m[5]) if len(m) > 5 else False))
+            out.append((w, classify(m[0], m[1]), bool(m[5]) if len(m) > 5 else False, m[1]))
     chunks, buf, buf_kind = [], [], None
-    for w, kind, bold in out:
+    for w, kind, bold, size in out:
+        # inside the footnotes, only a number smaller than the footnote type
+        # itself opens the next one; numbers in the text are set at note size
+        marker = (kind == "note" and size <= 11
+                  and re.fullmatch(r"\d{1,3}", w.translate(BIDI)))
         if kind == "quote":
             k = "quote"
         elif kind == "bold" and para["kind"] != "heading":
             k = "bold"
-        elif kind == "note" and para["kind"] != "note":
+        elif kind == "note" and (para["kind"] != "note" or marker):
+            # inside the footnotes themselves, a bare small number is the
+            # start of the next footnote
             k = "note"
         else:
             k = "text"
@@ -325,22 +354,21 @@ def split_notes(para, text):
 
     Returns [(reference number or None, text)].
     """
-    marks = [i for i, (w, m) in enumerate(
-        (w, m) for line in para["lines"] for w, m in zip(line["words"], line["metas"]))
-        if m[1] <= 11 and re.fullmatch(r"\d+", w.translate(BIDI))]
     lead = re.match(r"^\s*(?:<sup>(\d+)[.,]?</sup>|(\d+)\s*(?=[֐-ת]))", text)
     first_ref = next((g for g in (lead.groups() if lead else ()) if g), None)
     text = re.sub(r"^\s*<sup>\d+[.,]?</sup>\s*|^\s*\d+\s*(?=[֐-ת])", "", text)
-    if len(marks) <= 1:
-        return [(first_ref, text)] if text.strip() else []
+    # a block can hold several footnotes: each later one opens with its number
     parts = re.split(r"\s*<sup>(\d+)</sup>\s*", text)
-    out, refs = [], [first_ref]
-    for i, part in enumerate(parts):
-        if i % 2:
-            refs.append(part)
-        elif part.strip():
-            out.append((refs[len(out)] if len(out) < len(refs) else None, part.strip()))
-    return out
+    items, ref, buf, i = [], first_ref, parts[0], 1
+    while i < len(parts):
+        if buf.strip():
+            items.append((ref, buf.strip()))
+        ref = parts[i]
+        buf = parts[i + 1] if i + 1 < len(parts) else ""
+        i += 2
+    if buf.strip():
+        items.append((ref, buf.strip()))
+    return items
 
 
 def mark_missing_refs(page_blocks, refs):
@@ -362,16 +390,21 @@ def mark_missing_refs(page_blocks, refs):
     return page_blocks
 
 
-def convert(path, per_page=False):
-    """Booklet as HTML blocks; with per_page, [(page number, blocks)] instead."""
+def convert(path, per_page=False, joined=False):
+    """Booklet as HTML blocks.
+
+    per_page gives [(page number, blocks)] as each page was read, before
+    paragraphs interrupted by a page break are joined; with joined as well,
+    the pages are what the booklet ends up as, after joining.
+    """
     doc = pymupdf.open(path)
     texts = all_page_texts(path)
     vocab = collections.Counter(norm(w) for t in texts for w in t.split())
-    out, notes, pages = [], [], []
+    out, notes, pages, ranges = [], [], [], []
     for pno in range(doc.page_count):
         lines = page_lines(texts[pno] if pno < len(texts) else "", doc, pno, vocab)
         page_blocks, page_refs = [], []
-        for para in paragraphs(lines, doc[pno].rect.width):
+        for para in mark_citations(paragraphs(lines, doc[pno].rect.width)):
             text = render_words(para)
             if not text or DIGITS_ONLY.match(re.sub(r"<[^>]+>", "", text)):
                 continue
@@ -384,9 +417,21 @@ def convert(path, per_page=False):
                 starts_note = bool(para["lines"] and para["lines"][0]["words"]
                                    and re.fullmatch(r"\d+", para["lines"][0]["words"][0].translate(BIDI)))
                 for i, (ref, item) in enumerate(items):
-                    if i == 0 and notes and not starts_note:
-                        notes[-1] = notes[-1][:-len("</li>")] + " " + item + "</li>"
-                    else:
+                    # a piece with no number of its own continues the note
+                    # before it rather than starting a new one
+                    if not ref and not (i == 0 and starts_note):
+                        # a piece with no number of its own continues the note
+                        # before it, even when that note is on the page before
+                        if notes:
+                            notes[-1] = notes[-1][:-len("</li>")] + " " + item + "</li>"
+                            continue
+                        back = next((j for j in range(len(out) - 1, -1, -1)
+                                     if out[j].startswith("<aside")), None)
+                        if back is not None:
+                            head, sep, rest = out[back].rpartition("</li>")
+                            out[back] = head + " " + item + sep + rest
+                            continue
+                    if True:
                         attr = f' data-ref="{ref}"' if ref else ""
                         notes.append(f"<li{attr}>{item}</li>")
                         if ref:
@@ -409,19 +454,26 @@ def convert(path, per_page=False):
         # a paragraph interrupted by a page break continues on the next page
         prev = next((i for i in range(len(out) - 1, -1, -1)
                      if not out[i].startswith("<aside")), None)
+        # the class may differ across the break (the last lines of a quotation
+        # can look unindented), so only the sentence has to continue
         if (prev is not None and page_blocks
                 and out[prev].startswith("<p") and page_blocks[0].startswith("<p")
-                and out[prev].split(">")[0] == page_blocks[0].split(">")[0]
                 and not re.search(r"[.!?:]\s*</p>$", out[prev])
                 and not page_blocks[0].startswith("<p><b>")
                 and not PASSAGE_START.match(re.sub(r"<[^>]+>", "", page_blocks[0]))
                 and not PASSAGE_START.match(re.sub(r"<[^>]+>", "", out[prev]))):
             head = page_blocks.pop(0)
             out[prev] = out[prev][:-len("</p>")] + " " + head[len(head.split(">")[0]) + 1:]
+        page_start = len(out)
         out.extend(page_blocks)
         if notes:
             out.append('<aside class="notes"><ol>' + "".join(notes) + "</ol></aside>")
             notes = []
             own_blocks.append(out[-1])
         pages.append((pno + 1, own_blocks))
-    return pages if per_page else out
+        ranges.append((pno + 1, page_start, len(out)))
+    if per_page:
+        # slice at the end: joining a paragraph across a page break rewrites a
+        # block of the page before, which a slice taken earlier would miss
+        return [(p, out[a:b]) for p, a, b in ranges] if joined else pages
+    return out

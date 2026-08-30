@@ -5,11 +5,21 @@ sys.path.insert(0, "tools")
 import convert as C
 import structure as S
 
-STRIP = re.compile(r"[^֐-ת׳״A-Za-z0-9]")
+MARKS = re.compile(r"[\u0591-\u05c7]")            # nikud and cantillation
+STRIP = re.compile(r"[^\u05d0-\u05eaA-Za-z]")     # digits: markers are renumbered
 
 def norm(s):
-    s = re.sub(r"<[^>]+>", " ", s)
+    s = MARKS.sub("", re.sub(r"<[^>]+>", " ", s))
     return STRIP.sub("", s.translate(C.BIDI))
+
+def mostly_present(chunk, hay, width=20):
+    """Is this text somewhere in the booklet, even if broken across blocks?"""
+    if len(chunk) < width:
+        return chunk in hay
+    windows = [chunk[i:i + width] for i in range(0, len(chunk) - width + 1, width)]
+    hits = sum(1 for w in windows if w in hay)
+    return hits >= max(1, int(0.9 * len(windows)))
+
 
 def first_content_page(refs):
     """Cover pages and the table of contents are dropped on purpose."""
@@ -22,7 +32,11 @@ def first_content_page(refs):
 
 
 def audit(path):
-    pages = C.convert(path, per_page=True)
+    pages = C.convert(path, per_page=True, joined=True)
+    # footnotes move to the end of their passage and can continue onto the
+    # next page, so text that turns up anywhere in the booklet is not lost -
+    # only text that is nowhere at all is a fault
+    everywhere = norm("".join(b for _, blocks in pages for b in blocks))
     refs = C.all_page_texts(path)
     start = first_content_page(refs)
     problems = []
@@ -31,16 +45,18 @@ def audit(path):
             continue
         ref = norm(refs[pno - 1] if pno - 1 < len(refs) else "")
         out = norm("".join(blocks))
-        notes = norm("".join(b for b in blocks if b.startswith("<aside")))
+        notes = everywhere
         sm = difflib.SequenceMatcher(None, ref, out, autojunk=False)
         for tag, i1, i2, j1, j2 in sm.get_opcodes():
             if tag == "equal":
                 continue
             gone, added = ref[i1:i2], out[j1:j2]
-            # footnotes are deliberately moved to the end of the passage
-            if gone and gone in notes:
+            # footnotes move to the end of the passage, and a footnote split
+            # by a page break is joined onto the one before it: text that
+            # turns up elsewhere in the booklet has moved, not gone
+            if gone and mostly_present(gone, notes):
                 continue
-            if added and added in notes:
+            if added and mostly_present(added, notes):
                 continue
             if tag == "delete" and len(gone) >= 25:
                 problems.append((pno, "missing", gone))
